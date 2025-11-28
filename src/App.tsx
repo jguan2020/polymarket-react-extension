@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import './App.css';
 
+//Authentication Handler
+import { useAuthApi } from './useAuthApi';
+
 //Polymarket and AWS API endpoints
-const featuredApi =
-  'https://gamma-api.polymarket.com/markets?limit=200&active=true&closed=false&order=volume24hr&ascending=false&presets=NewMarkets';
 const searchApi = 'https://gamma-api.polymarket.com/public-search';
-const awsLambda = 'https://4rlb5xh5osnoeuv6usqeo5qsqa0qpjhn.lambda-url.us-east-1.on.aws/';
+const awsApi = 'https://koge3v5c0f.execute-api.us-east-1.amazonaws.com/Prod';
 const PAGE_SIZE = 9;
 
 
@@ -39,12 +40,17 @@ const parseJsonArray = (value?: string) => {
 };
 
 function App() {
+
+  //State variables
+  const { token, userEmail, authLoading, authError, signIn, signUp, signOut } = useAuthApi();
   const [featured, setFeatured] = useState<Market[]>([]);
   const [page, setPage] = useState(0);
   const [textbox, setTextbox] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
+  const [follows, setFollows] = useState<string[]>([]);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
 
   //Gets and caches active markets 
   const getActiveMarkets = useMemo(() => {
@@ -70,7 +76,6 @@ function App() {
     [getActiveMarkets, page],
   );
 
-
   //Polymarket search API based on query string
   const searchFunc = async (query: string) => {
     const searchUrl = new URL(searchApi);
@@ -83,7 +88,6 @@ function App() {
     searchUrl.searchParams.append('presets', 'EventsTitle');
     searchUrl.searchParams.append('presets', 'Events');
 
-    awsLambda;
     const res = await fetch(searchUrl.toString());
     if (!res.ok) throw new Error(`Error: ${res.status}`);
     const data = await res.json();
@@ -99,8 +103,7 @@ function App() {
     try {
       setLoading(true);
       setError(null);
-      const featuredUrl = new URL(featuredApi);
-      const res = await fetch(featuredUrl.toString());
+      const res = await fetch(`${awsApi}/featured`);
       if (!res.ok) throw new Error(`Error: ${res.status}`);
       const data: Market[] = await res.json();
       const markets = data.filter((market) => Number(market.liquidityNum) > 0);
@@ -112,7 +115,6 @@ function App() {
       setLoading(false);
     }
   };
-
 
   //Helper function to hit search API
   const handleSearch = async () => {
@@ -130,15 +132,105 @@ function App() {
     }
   };
 
+  //Load followed markets
+  const loadFollows = async () => {
+    if (!token) return;
+    const res = await fetch(`${awsApi}/follows`, {
+      headers: { Authorization: token },
+    });
+    if (!res.ok) throw new Error('Failed to load follows');
+    const data = await res.json();
+    setFollows(data.map((item: any) => item.marketId));
+  };
+
+  //Add market to followed
+  const handleFollow = async (marketId: string) => {
+    if (!token) return;
+    await fetch(`${awsApi}/follows`, {
+      method: 'POST',
+      headers: {
+        Authorization: token,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ marketId }),
+    });
+    loadFollows().catch(console.error);
+  };
+
   //Load trending markets on init
   useEffect(() => {
     loadFeatured();
   }, []);
 
-  
+  useEffect(() => {
+    if (token) {
+      loadFollows().catch(console.error);
+    } else {
+      setFollows([]);
+    }
+  }, [token]);
+
   return (
     <div className="root">
       <div className="dash">
+        <div className="auth">
+          {userEmail ? (
+            <div className="auth-info">
+              <span>Signed in as {userEmail}</span>
+              <button onClick={signOut} disabled={authLoading}>
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <form
+              className="auth-form"
+              onSubmit={async (e) => {
+                e.preventDefault();
+                try {
+                  await signIn(email, password);
+                } catch {
+                  /* auth error handled below */
+                }
+              }}
+            >
+              <input
+                className="textbox"
+                type="email"
+                placeholder="Email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+              <input
+                className="textbox"
+                type="password"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <div className="auth-buttons">
+                <button type="submit" className="submit" disabled={authLoading}>
+                  Sign in
+                </button>
+                <button
+                  type="button"
+                  className="submit secondary"
+                  onClick={async () => {
+                    try {
+                      await signUp(email, password);
+                    } catch {
+                      /* handled in hook */
+                    }
+                  }}
+                  disabled={authLoading}
+                >
+                  Sign up
+                </button>
+              </div>
+              {authError && <div className="error">{authError}</div>}
+            </form>
+          )}
+        </div>
+
         <div className="search">
           <div className="searchItems">
             <input
@@ -162,6 +254,7 @@ function App() {
         {visible.map((item) => {
           const names = parseJsonArray(item.outcomes);
           const prices = parseJsonArray(item.outcomePrices).map((p) => Number(p) * 100);
+          const isFollowed = follows.includes(item.id);
           return (
             <div className="cell" key={item.id}>
               <div className="row1">
@@ -188,7 +281,16 @@ function App() {
               <div className="row2">
                 <div className="question">{item.question}</div>
               </div>
-              <div className="pot">Total Stake: ${formatStake(item.liquidityNum)}</div>
+              <div className="cell-actions">
+                <div className="pot">Total Stake: ${formatStake(item.liquidityNum)}</div>
+                <button
+                  className="submit follow"
+                  onClick={() => handleFollow(item.id)}
+                  disabled={!token || isFollowed}
+                >
+                  {isFollowed ? 'Following' : 'Follow'}
+                </button>
+              </div>
             </div>
           );
         })}
